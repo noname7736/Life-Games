@@ -1,0 +1,9 @@
+{
+  "name": "Sovereign Command & Control",
+  "description": "The absolute governance and management system for Trakul Tham Arena, Ayutthaya Sector. Powered by Gemini 3 Pro reasoning and Gemini 2.5 Flash Native Audio.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
