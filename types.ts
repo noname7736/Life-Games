@@ -10,9 +10,28 @@ export enum KernelStatus {
 export interface NetworkNode {
   id: string;
   location: string;
-  status: 'ONLINE' | 'OFFLINE' | 'INTERCEPTED';
+  status: 'ONLINE' | 'OFFLINE';
   load: number;
-  lastPing: number;
+}
+
+export interface Worker {
+  id: string;
+  name: string;
+  ap: number; // Activity Points
+  sp: number; // Sovereign Points (Money/Assets)
+  rank: 'Diamond' | 'Gold' | 'Silver';
+  status: 'Active' | 'Warning' | 'Suspended';
+  notes: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  timestamp: string;
+  workerId: string;
+  workerName: string;
+  type: 'REWARD' | 'PENALTY' | 'SYSTEM';
+  amount: number;
+  reason: string;
 }
 
 export interface SystemState {
@@ -21,7 +40,6 @@ export interface SystemState {
   totalDirectives: number;
   sovereignPoints: number;
   networkIntegrity: number;
-  activeWorkers: number;
 }
 
 export interface AgentThought {

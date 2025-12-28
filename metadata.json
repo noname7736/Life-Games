@@ -1,6 +1,6 @@
 {
-  "name": "Sovereign Command & Control",
-  "description": "The absolute governance and management system for Trakul Tham Arena, Ayutthaya Sector. Powered by Gemini 3 Pro reasoning and Gemini 2.5 Flash Native Audio.",
+  "name": "Sovereign Nexus Ayutthaya",
+  "description": "The absolute autonomous governance system for rider grid networks in Ayutthaya. 100% AI-driven management, surveillance, and enforcement.",
   "requestFramePermissions": [
     "camera",
     "microphone",

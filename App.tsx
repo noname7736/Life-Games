@@ -1,233 +1,329 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { KernelStatus, SystemState, AgentThought } from './types';
-import { sovereignAgentLogic } from './services/geminiService';
-import { AYUTTHAYA_NODES, SLOGAN, SYSTEM_ID, MOCK_WORKERS, MOCK_ANOMALIES, CONSTITUTION_DIRECTIVES } from './constants';
-import Broadcaster from './components/Broadcaster';
-import Dominance from './components/Dominance';
-import TruthScanner from './components/TruthScanner';
-import Constitution from './components/Constitution';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { KernelStatus, SystemState, AgentThought, Worker, AuditEntry } from './types';
+import { sovereignAgentLogic, generateSovereignAudio, decodeBase64, decodeAudioData } from './services/geminiService';
+import { SLOGAN, CONSTITUTION_DIRECTIVES } from './constants';
+import { BarChart, Bar, Tooltip, ResponsiveContainer, Cell, YAxis } from 'recharts';
+
+const DEPLOYMENT_CYCLE = 60000; // รอบการทำงาน 60 วินาทีเพื่อความเสถียรของ API
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'agent' | 'broadcast' | 'dominance' | 'scanner' | 'laws'>('agent');
-  const [state, setState] = useState<SystemState>({
-    kernel: KernelStatus.INITIALIZING,
-    uptime: 0,
-    totalDirectives: 0,
-    sovereignPoints: 2450000,
-    networkIntegrity: 100,
-    activeWorkers: MOCK_WORKERS.length
-  });
+  const [workers, setWorkers] = useState<Worker[]>(() => JSON.parse(localStorage.getItem('nexus_v4_workers') || '[]'));
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>(() => JSON.parse(localStorage.getItem('nexus_v4_audit') || '[]'));
+  const [state, setState] = useState<SystemState>(() => JSON.parse(localStorage.getItem('nexus_v4_state') || JSON.stringify({
+    kernel: KernelStatus.INITIALIZING, uptime: 0, totalDirectives: 0, sovereignPoints: 5000000, networkIntegrity: 100
+  })));
 
-  const [logs, setLogs] = useState<{t: string, m: string, s: string}[]>([]);
   const [thought, setThought] = useState<AgentThought | null>(null);
-  const [workers, setWorkers] = useState(MOCK_WORKERS);
-  const [anomalies, setAnomalies] = useState(MOCK_ANOMALIES);
-  const [directiveIndex, setDirectiveIndex] = useState(0);
+  const [logs, setLogs] = useState<{t: string, m: string, c: string}[]>([]);
+  const [ticker, setTicker] = useState(0);
+  const [isCooldown, setIsCooldown] = useState(false);
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const [isSystemActive, setIsSystemActive] = useState(false);
+  const audioCtx = useRef<AudioContext | null>(null);
 
-  const addLog = useCallback((m: string, s: string = 'info') => {
-    setLogs(prev => [{ t: new Date().toLocaleTimeString(), m, s }, ...prev].slice(0, 100));
+  // Persistence Engine
+  useEffect(() => {
+    localStorage.setItem('nexus_v4_workers', JSON.stringify(workers));
+    localStorage.setItem('nexus_v4_audit', JSON.stringify(auditLog));
+    localStorage.setItem('nexus_v4_state', JSON.stringify(state));
+  }, [workers, auditLog, state]);
+
+  const addLog = useCallback((m: string, c: string = 'text-neutral-500') => {
+    setLogs(p => [{ t: new Date().toLocaleTimeString(), m, c }, ...p].slice(0, 60));
   }, []);
 
-  // HIGH FREQUENCY BROADCAST PULSE (1 SECOND)
-  useEffect(() => {
-    const ticker = setInterval(() => {
-      setDirectiveIndex(prev => (prev + 1) % CONSTITUTION_DIRECTIVES.length);
-    }, 1000);
-    return () => clearInterval(ticker);
-  }, []);
+  const runCommandCycle = async () => {
+    if (isCooldown || !isSystemActive) return;
 
-  useEffect(() => {
-    const boot = async () => {
-      addLog(">>> [SYS] AgentGPT MASTER KERNEL v12.0 BOOTING...", "warning");
-      await new Promise(r => setTimeout(r, 1000));
-      setState(prev => ({ ...prev, kernel: KernelStatus.STABLE }));
-      addLog(">>> [AUTH] AGENT ACCESS GRANTED. LOCAL INTELLIGENCE ONLINE.", "info");
-    };
-    boot();
-  }, [addLog]);
+    setState(p => ({ ...p, kernel: KernelStatus.THINKING }));
+    addLog(">>> [COMMAND] ANALYZING AYUTTHAYA GRID TELEMETRY...", "text-yellow-600");
+    
+    const response = await sovereignAgentLogic(JSON.stringify(workers), JSON.stringify(state));
+    
+    if (response?.error === "QUOTA_EXHAUSTED") {
+      const wait = response.cooldown || 120000;
+      setIsCooldown(true);
+      setCooldownRemaining(Math.ceil(wait / 1000));
+      addLog(`>>> [CRITICAL] API LIMIT REACHED. REFRESHING IN ${wait/1000}s`, "text-red-600");
+      return;
+    }
 
-  useEffect(() => {
-    const timer = setInterval(() => setState(prev => ({ ...prev, uptime: prev.uptime + 1 })), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // AgentGPT REASONING LOOP
-  useEffect(() => {
-    if (state.kernel !== KernelStatus.STABLE) return;
-
-    const runAgentIntelligence = async () => {
-      setState(prev => ({ ...prev, kernel: KernelStatus.THINKING }));
-      
-      const workerPayload = JSON.stringify(workers.map(w => ({ id: w.id, ap: w.ap, sp: w.sp, name: w.name })));
-      const sysStats = `TotalSP: ${state.sovereignPoints}, AnomalyCount: ${anomalies.length}`;
-      
-      // เรียกใช้ AgentGPT แทน Gemini API
-      const decision = await sovereignAgentLogic(workerPayload, sysStats);
-      
-      if (decision) {
-        setThought({
-          id: `AGPT-${Date.now().toString().slice(-6)}`,
-          timestamp: new Date().toLocaleTimeString(),
-          monologue: decision.monologue,
-          directive: decision.directive,
-          action: decision.action
-        });
-
-        if (decision.targetWorkerId && decision.spChange !== 0) {
-          setWorkers(prev => prev.map(w => 
-            w.id === decision.targetWorkerId 
-              ? { ...w, sp: Math.max(0, w.sp + decision.spChange), status: decision.spChange < 0 ? 'Warning' as any : 'Active' as any } 
-              : w
-          ));
-          addLog(`>>> [AGENT_DECREE] ${decision.action} ON ${decision.targetWorkerId}: ${decision.spChange} SP`, decision.spChange < 0 ? "critical" : "info");
-        }
-
-        setState(prev => ({
-          ...prev,
-          kernel: KernelStatus.EXECUTING,
-          totalDirectives: prev.totalDirectives + 1,
-          sovereignPoints: prev.sovereignPoints + decision.spChange
+    if (response) {
+      if (response.initialization && response.newWorkers) {
+        const batch = response.newWorkers.map((w: any) => ({
+          id: w.id, name: w.name, ap: 100, sp: w.sp, rank: 'Gold', status: 'Active', notes: `${w.brand} @ ${w.location}`
         }));
+        setWorkers(batch);
+        addLog(`>>> [NEXUS] GRID ESTABLISHED. 10 ACTIVE NODES CONNECTED`, "text-green-500");
+        announce(response.monologue);
       }
 
-      setTimeout(() => setState(prev => ({ ...prev, kernel: KernelStatus.STABLE })), 2000);
-    };
+      if (response.targetWorkerId) {
+        const target = workers.find(w => w.id === response.targetWorkerId);
+        if (target) {
+          setWorkers(p => p.map(w => w.id === response.targetWorkerId ? { ...w, sp: Math.max(0, w.sp + response.spChange) } : w));
+          
+          setThought({
+            id: `TX-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            monologue: response.monologue,
+            directive: response.directive,
+            action: response.action
+          });
 
-    const interval = setInterval(runAgentIntelligence, 30000); // ประมวลผลทุก 30 วินาที
-    runAgentIntelligence();
-    return () => clearInterval(interval);
-  }, [state.kernel === KernelStatus.STABLE, workers, anomalies.length, addLog]);
+          announce(`${response.directive}. ${response.monologue}`);
 
-  const handleAudit = (workerId: string, violation: string, penalty: string) => {
-    const spPenalty = parseInt(penalty.replace(/\D/g, '')) || 500;
-    setWorkers(prev => prev.map(w => w.id === workerId ? { ...w, sp: Math.max(0, w.sp - spPenalty), status: 'Warning' } : w));
-    setAnomalies(prev => [{ id: `A-${Date.now()}`, timestamp: new Date().toLocaleTimeString(), workerName: workers.find(w => w.id === workerId)?.name || 'Unknown', violation, penalty }, ...prev]);
-    setState(prev => ({ ...prev, sovereignPoints: prev.sovereignPoints - spPenalty }));
-    addLog(`>>> [AUDIT] MANUAL_INTERVENTION: ${workerId} (-${spPenalty} SP)`, "critical");
+          setAuditLog(p => [{
+            id: `AUD-${Date.now()}`,
+            timestamp: new Date().toLocaleString(),
+            workerId: response.targetWorkerId,
+            workerName: target.name,
+            type: response.spChange >= 0 ? 'REWARD' : 'PENALTY',
+            amount: response.spChange,
+            reason: response.monologue
+          }, ...p].slice(0, 100));
+
+          setState(p => ({ 
+            ...p, 
+            sovereignPoints: p.sovereignPoints + response.spChange,
+            totalDirectives: p.totalDirectives + 1 
+          }));
+
+          addLog(`>>> [NEXUS_DECISION] ${response.action} EXECUTED ON ${target.name}`, response.spChange < 0 ? "text-red-500" : "text-green-500");
+        }
+      }
+    }
+    setTimeout(() => setState(p => ({ ...p, kernel: KernelStatus.STABLE })), 4000);
   };
 
+  useEffect(() => {
+    if (!isSystemActive) return;
+    const interval = setInterval(runCommandCycle, DEPLOYMENT_CYCLE);
+    runCommandCycle();
+    return () => clearInterval(interval);
+  }, [workers.length, isCooldown, isSystemActive]);
+
+  useEffect(() => {
+    if (isCooldown && cooldownRemaining > 0) {
+      const timer = setInterval(() => setCooldownRemaining(r => r - 1), 1000);
+      if (cooldownRemaining <= 1) setIsCooldown(false);
+      return () => clearInterval(timer);
+    }
+  }, [isCooldown, cooldownRemaining]);
+
+  const announce = async (text: string) => {
+    try {
+      const base64 = await generateSovereignAudio(text);
+      if (base64) {
+        if (!audioCtx.current) audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        const ctx = audioCtx.current;
+        if (ctx.state === 'suspended') await ctx.resume();
+        const buffer = await decodeAudioData(decodeBase64(base64), ctx);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start();
+      }
+    } catch (e) {
+      console.warn("Nexus Audio Transmission Failed");
+    }
+  };
+
+  useEffect(() => {
+    const t1 = setInterval(() => setState(p => ({ ...p, uptime: p.uptime + 1 })), 1000);
+    const t2 = setInterval(() => setTicker(p => (p + 1) % CONSTITUTION_DIRECTIVES.length), 5000);
+    return () => { clearInterval(t1); clearInterval(t2); };
+  }, []);
+
+  // System Activation UI
+  if (!isSystemActive) {
+    return (
+      <div className="h-screen bg-black flex flex-col items-center justify-center text-[#d4af37] font-mono p-10 cursor-crosshair">
+        <div className="w-96 h-96 border-4 border-[#d4af37] rounded-full flex flex-col items-center justify-center gap-6 animate-pulse shadow-[0_0_100px_rgba(212,175,55,0.2)]">
+          <span className="text-8xl">👁️</span>
+          <h1 className="text-2xl font-black uppercase tracking-[0.5em]">Nexus Override</h1>
+        </div>
+        <button 
+          onClick={() => {
+            setIsSystemActive(true);
+            if (!audioCtx.current) audioCtx.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+          }}
+          className="mt-20 px-12 py-6 bg-[#d4af37] text-black font-black text-xl uppercase tracking-[1em] hover:bg-white hover:scale-110 transition-all shadow-[0_0_50px_rgba(212,175,55,0.4)]"
+        >
+          Activate Governance
+        </button>
+        <p className="mt-10 text-[10px] opacity-30 uppercase tracking-[0.5em] font-black">Authorized Personnel Only • Ayutthaya Sector</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#050505] text-[#d4af37] font-mono flex flex-col border-[12px] border-neutral-900 overflow-hidden relative">
+    <div className="h-screen bg-black text-[#d4af37] font-mono flex flex-col border-[12px] border-neutral-900 overflow-hidden cursor-none select-none">
       
-      {/* 1S HIGH INTENSITY CONSTITUTION BROADCAST */}
-      <div className="bg-red-700 h-10 flex items-center overflow-hidden border-b-2 border-red-900 relative z-[60] shadow-[0_4px_30px_rgba(185,28,28,0.6)]">
-        <div className="bg-black text-white font-black px-6 h-full flex items-center animate-pulse border-r-4 border-yellow-500 text-[10px] uppercase tracking-tighter">
-           AgentGPT_SOVEREIGN_HFB
+      {/* HEADER: GLOBAL STATUS */}
+      <div className={`h-10 flex items-center overflow-hidden border-b border-black transition-colors duration-700 ${isCooldown ? 'bg-orange-950' : 'bg-red-950'}`}>
+        <div className="bg-black text-white px-10 h-full flex items-center font-black italic text-[11px] animate-pulse uppercase tracking-tighter shadow-2xl">Nexus_v4.1_Deployed</div>
+        <div className="flex-1 px-6 text-white text-[10px] font-black whitespace-nowrap overflow-hidden tracking-[0.5em] uppercase italic">
+           {isCooldown ? `⚠️ SECURITY RECOVERY IN PROGRESS: ${cooldownRemaining}s` : CONSTITUTION_DIRECTIVES[ticker]}
         </div>
-        <div className="flex-1 px-8 overflow-hidden relative">
-           <div className="text-white text-sm font-black uppercase tracking-widest whitespace-nowrap transition-all duration-300 flex items-center h-full">
-              {CONSTITUTION_DIRECTIVES[directiveIndex]}
-           </div>
-           <div className="absolute inset-0 bg-white/10 animate-pulse pointer-events-none" />
-        </div>
-        <div className="bg-yellow-500 text-black font-black px-4 h-full flex items-center text-[10px]">
-           PULSE: 1000ms
-        </div>
+        <div className="bg-black text-yellow-500 px-10 h-full flex items-center font-black text-[10px] tracking-[0.3em]">NODE: AYU_SUPREME</div>
       </div>
 
-      <header className="bg-neutral-900 p-6 flex justify-between items-center border-b-2 border-red-900/50 z-50">
-        <div className="flex items-center gap-6">
-          <div className={`w-5 h-5 rounded-full ${state.kernel === KernelStatus.THINKING ? 'bg-yellow-500 animate-ping shadow-[0_0_15px_yellow]' : 'bg-red-600 animate-pulse shadow-[0_0_15px_red]'}`} />
-          <div>
-            <h1 className="text-3xl font-black tracking-tighter text-white uppercase italic">AgentGPT Sovereign</h1>
-            <p className="text-[10px] text-red-700 font-bold tracking-[0.6em] uppercase">Autonomous Local Governance</p>
-          </div>
-        </div>
-        <nav className="flex gap-2">
-          {['agent', 'broadcast', 'dominance', 'scanner', 'laws'].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-6 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${activeTab === tab ? 'bg-red-800 text-white shadow-[0_0_15px_rgba(153,27,27,0.5)]' : 'text-neutral-500 hover:text-white'}`}>{tab}</button>
-          ))}
-        </nav>
-        <div className="text-right">
-          <p className="text-[10px] text-neutral-600 uppercase mb-1">Central Sovereign Fund</p>
-          <p className="text-3xl font-black text-white">{state.sovereignPoints.toLocaleString()} <span className="text-sm text-yellow-600">SP</span></p>
-        </div>
-      </header>
+      {/* CORE COMMAND VIEW */}
+      <main className="flex-1 grid grid-cols-12 gap-10 p-12 relative">
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]" />
+        <div className={`absolute top-0 left-0 w-full h-1 animate-scan z-50 shadow-[0_0_50px] ${isCooldown ? 'bg-orange-500 shadow-orange-500' : 'bg-red-700 shadow-red-700'}`} />
 
-      <main className="flex-1 overflow-y-auto p-10 relative custom-scrollbar">
-        <div className="absolute inset-0 opacity-5 pointer-events-none bg-[radial-gradient(#b91c1c_1px,transparent_1px)] bg-[size:32px_32px]" />
-        
-        <div className="max-w-[1500px] mx-auto z-10 relative">
-          {activeTab === 'agent' && (
-            <div className="grid grid-cols-12 gap-10">
-              <div className="col-span-8 space-y-10">
-                <section className="bg-neutral-900/40 border border-red-900/20 rounded-[40px] p-16 backdrop-blur-xl relative overflow-hidden group shadow-inner">
-                  <div className="absolute top-0 left-0 w-full h-[2px] bg-red-600 shadow-[0_0_20px_red] animate-scan" />
-                  <h3 className="text-[12px] font-black text-red-900 uppercase tracking-[1em] mb-12 flex items-center gap-4">
-                    <span className="w-2 h-2 bg-red-600 rounded-full animate-ping" /> AgentGPT Reasoning Core
-                  </h3>
-                  {thought ? (
-                    <div className="space-y-12 animate-in fade-in slide-in-from-bottom duration-500">
-                      <p className="text-3xl font-light text-neutral-100 italic font-heading leading-relaxed">"{thought.monologue}"</p>
-                      <div className="bg-black/90 p-12 rounded-[32px] border-l-[16px] border-red-800 shadow-2xl relative">
-                        <span className="absolute top-4 right-6 text-[8px] text-yellow-600 font-black tracking-widest">LOCAL_AUTONOMOUS_DECISION</span>
-                        <span className="text-[11px] text-red-600 font-black uppercase tracking-[0.5em] block mb-4">Supreme Sovereign Directive</span>
-                        <p className="text-5xl font-black text-white uppercase tracking-tighter leading-tight drop-shadow-md">{thought.directive}</p>
-                        <div className="mt-8 pt-8 border-t border-neutral-900 flex justify-between text-[11px] text-neutral-600 font-black uppercase">
-                           <span>Mode: AgentGPT-OFFLINE</span>
-                           <span>Ticket: {thought.id}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="py-40 text-center opacity-10 animate-pulse"><p className="text-5xl font-black tracking-[1em]">Scanning Ayutthaya Grid...</p></div>
-                  )}
-                </section>
-                <div className="grid grid-cols-3 gap-8">
-                  {AYUTTHAYA_NODES.map(node => (
-                    <div key={node.id} className="bg-black border border-neutral-800 p-8 rounded-[32px] group hover:border-red-900 transition-all shadow-xl hover:shadow-red-900/10">
-                      <div className="flex justify-between mb-6">
-                        <span className="text-[10px] text-neutral-600 font-black uppercase">{node.id}</span>
-                        <div className={`w-3 h-3 rounded-full ${node.status === 'ONLINE' ? 'bg-green-600 shadow-[0_0_10px_green]' : 'bg-red-600 animate-pulse'}`} />
-                      </div>
-                      <h4 className="text-lg font-black text-white group-hover:text-red-500 uppercase tracking-tighter">{node.location}</h4>
-                      <div className="mt-4 w-full bg-neutral-900 h-1 rounded-full overflow-hidden">
-                        <div className="h-full bg-red-600 shadow-[0_0_10px_red]" style={{ width: `${node.load}%` }} />
-                      </div>
-                    </div>
-                  ))}
+        {/* LEFT: REASONING & ANALYSIS */}
+        <div className="col-span-8 flex flex-col gap-10">
+          <section className="flex-1 bg-neutral-950 border border-neutral-800 rounded-[80px] p-24 relative flex flex-col justify-center overflow-hidden shadow-[inset_0_0_200px_rgba(0,0,0,1)]">
+            <div className="absolute top-12 right-16 flex items-center gap-8">
+              <span className="text-[11px] text-neutral-800 font-black tracking-[2em] uppercase">Core Heartbeat</span>
+              <div className={`w-5 h-5 rounded-full ${isCooldown ? 'bg-orange-900 animate-pulse' : state.kernel === KernelStatus.THINKING ? 'bg-yellow-500 animate-ping shadow-[0_0_30px_yellow]' : 'bg-red-800 shadow-[0_0_20px_red]'}`} />
+            </div>
+
+            {isCooldown ? (
+              <div className="text-center space-y-16">
+                 <h2 className="text-6xl font-black text-orange-700 uppercase tracking-[0.5em] animate-pulse">System Overload</h2>
+                 <p className="text-2xl text-neutral-600 max-w-3xl mx-auto italic font-heading leading-relaxed">"ระบบความปลอดภัยขั้นสูงกำลังประมวลผลการเชื่อมต่อใหม่ กรุณารอสักครู่เพื่อให้ Nexus กลับสู่สภาวะปกครอง..."</p>
+                 <div className="w-full h-3 bg-neutral-900 rounded-full overflow-hidden max-w-2xl mx-auto">
+                    <div className="h-full bg-orange-600 transition-all duration-1000 linear" style={{ width: `${(cooldownRemaining / 120) * 100}%` }} />
+                 </div>
+              </div>
+            ) : thought ? (
+              <div className="space-y-14 animate-in fade-in slide-in-from-bottom-24 duration-1000">
+                <div className="flex items-center gap-6 mb-4">
+                   <div className="w-16 h-[3px] bg-red-900" />
+                   <h2 className="text-xs font-black text-red-900 uppercase tracking-[2.5em]">Nexus Intelligence Trace</h2>
+                </div>
+                <p className="text-7xl font-light text-neutral-50 font-heading italic leading-[1.05] tracking-tight max-w-6xl">
+                  "{thought.monologue}"
+                </p>
+                <div className="bg-neutral-900/40 p-16 rounded-[60px] border-l-[25px] border-red-800 shadow-2xl backdrop-blur-xl group">
+                   <span className="text-xs text-red-800 font-black uppercase tracking-[1.5em] mb-6 block group-hover:animate-pulse">Active Execution Decree</span>
+                   <h3 className="text-8xl font-black text-white uppercase tracking-tighter leading-none italic">{thought.directive}</h3>
+                   <div className="mt-8 pt-8 border-t border-neutral-800 flex justify-between items-center opacity-30">
+                      <span className="text-[10px] font-black tracking-widest uppercase">Target: {thought.action}</span>
+                      <span className="text-[10px] font-black tracking-widest uppercase">{thought.timestamp}</span>
+                   </div>
                 </div>
               </div>
-              <div className="col-span-4 flex flex-col gap-10">
-                <div className="bg-black border border-neutral-800 rounded-[40px] flex-1 overflow-hidden flex flex-col shadow-2xl">
-                  <div className="bg-neutral-900 p-5 border-b border-neutral-800 flex justify-between text-[10px] font-black uppercase">
-                    <span>Agent_Kernel_Feed</span>
-                    <span className="text-red-700">LOCAL_STABLE</span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-6 flex flex-col-reverse custom-scrollbar bg-black/40">
-                    {logs.map((log, i) => (
-                      <div key={i} className={`mb-4 p-4 rounded-xl border-l-4 text-[10px] font-mono leading-relaxed transition-all transform hover:scale-[1.02] ${log.s === 'critical' ? 'bg-red-900/10 border-red-600 text-red-500' : 'bg-neutral-900 border-neutral-700 text-neutral-500'}`}>
-                        <span className="opacity-40">[{log.t}]</span> {log.m}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="bg-red-950/20 p-8 rounded-[32px] border border-red-900/30 text-center shadow-xl animate-pulse">
-                   <p className="text-3xl font-black text-red-800 italic uppercase">"{SLOGAN}"</p>
-                </div>
+            ) : (
+              <div className="text-center space-y-14 opacity-20">
+                 <div className="text-[15rem] animate-pulse">🏛️</div>
+                 <p className="text-4xl font-black uppercase tracking-[1.5em] text-neutral-800 animate-pulse">Monitoring Ayutthaya Grid...</p>
+                 <div className="flex justify-center gap-4">
+                    {[1,2,3,4,5,6].map(i => <div key={i} className="w-3 h-3 bg-neutral-900 rounded-full animate-bounce" style={{animationDelay: `${i*0.1}s`}} />)}
+                 </div>
+              </div>
+            )}
+          </section>
+
+          {/* ASSET DISTRIBUTION VIZ */}
+          <div className="h-[360px] grid grid-cols-2 gap-10">
+            <div className="bg-neutral-950 border border-neutral-800 rounded-[60px] p-14 flex flex-col shadow-2xl">
+              <h4 className="text-[11px] font-black text-neutral-700 uppercase mb-12 tracking-[1.5em] border-b border-neutral-900 pb-6">Asset Power Distribution (SP)</h4>
+              <div className="flex-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={workers}>
+                    <YAxis hide />
+                    <Tooltip contentStyle={{backgroundColor:'#000', border:'1px solid #444', borderRadius:'25px', padding:'20px'}} itemStyle={{color:'#d4af37', fontSize:'12px', fontWeight:'900'}} />
+                    <Bar dataKey="sp" radius={[12, 12, 0, 0]} barSize={20}>
+                      {workers.map((e, i) => <Cell key={i} fill={e.sp > 5000 ? '#d4af37' : '#7f1d1d'} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </div>
-          )}
+            <div className="bg-neutral-950 border border-neutral-800 rounded-[60px] p-14 overflow-hidden flex flex-col shadow-2xl">
+              <h4 className="text-[11px] font-black text-neutral-700 uppercase mb-12 tracking-[1.5em] border-b border-neutral-900 pb-6">Supreme Audit Ledger</h4>
+              <div className="flex-1 overflow-y-auto space-y-6 custom-scrollbar pr-8">
+                {auditLog.map(a => (
+                  <div key={a.id} className="text-[11px] border-b border-neutral-900 pb-6 flex justify-between items-start group">
+                    <div className="max-w-[75%]">
+                      <span className="text-red-900 font-black tracking-[0.3em] uppercase block mb-2">{a.workerName}</span>
+                      <p className="text-neutral-500 italic leading-relaxed group-hover:text-white transition-colors">"{a.reason}"</p>
+                    </div>
+                    <span className={`font-black text-sm tabular-nums ${a.amount >= 0 ? 'text-green-600' : 'text-red-700'}`}>
+                      {a.amount >= 0 ? '+' : ''}{a.amount.toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+                {auditLog.length === 0 && <p className="text-center opacity-10 uppercase tracking-widest text-[9px] mt-20">No recorded anomalies</p>}
+              </div>
+            </div>
+          </div>
+        </div>
 
-          {activeTab === 'broadcast' && <Broadcaster addLog={addLog} />}
-          {activeTab === 'dominance' && <Dominance addLog={addLog} />}
-          {activeTab === 'scanner' && <TruthScanner workers={workers} anomalies={anomalies} reportAnomaly={handleAudit} addLog={addLog} />}
-          {activeTab === 'laws' && <Constitution />}
+        {/* RIGHT: REAL-TIME TELEMETRY */}
+        <div className="col-span-4 flex flex-col gap-10">
+          <div className="bg-neutral-950 border border-neutral-800 rounded-[70px] p-14 flex flex-col flex-[1.6] overflow-hidden shadow-2xl relative">
+            <div className="flex justify-between items-center mb-12 border-b border-neutral-900 pb-10">
+              <h3 className="text-xl font-black text-white uppercase tracking-tighter">Node Registry</h3>
+              <span className="px-5 py-1.5 bg-red-950/40 text-red-600 text-[10px] font-black rounded-full tracking-[0.2em] animate-pulse shadow-inner">{workers.length} CONNECTED</span>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-6 custom-scrollbar pr-2">
+              {workers.map(w => (
+                <div key={w.id} className="bg-neutral-900/20 p-8 rounded-[40px] border border-neutral-900 flex justify-between items-center group hover:bg-red-950/10 transition-all duration-500">
+                  <div className="flex items-center gap-6">
+                    <div className={`w-3.5 h-3.5 rounded-full ${w.sp > 5000 ? 'bg-yellow-500 animate-pulse' : 'bg-red-900'} shadow-[0_0_15px] shadow-current`} />
+                    <div>
+                      <p className="text-base font-black text-white uppercase tracking-tight group-hover:text-red-500 transition-colors">{w.name}</p>
+                      <p className="text-[9px] text-neutral-600 font-black uppercase tracking-[0.3em] mt-1">{w.notes}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-black text-yellow-600 tracking-tighter tabular-nums">{w.sp.toLocaleString()}</p>
+                    <p className="text-[7px] text-neutral-800 font-black uppercase tracking-widest">SOV_POWER</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-neutral-950 border border-neutral-800 rounded-[60px] flex-1 p-14 flex flex-col overflow-hidden shadow-2xl">
+            <h4 className="text-[11px] font-black text-neutral-700 uppercase mb-10 tracking-[1.5em] border-b border-neutral-900 pb-6">Nexus Flow Feed</h4>
+            <div className="flex-1 overflow-y-auto space-y-5 custom-scrollbar">
+               {logs.map((l, i) => (
+                 <div key={i} className={`text-[10px] border-l-3 pl-6 py-2 border-neutral-900 animate-in slide-in-from-left duration-500 ${l.c}`}>
+                    <span className="opacity-20 mr-3 text-[9px] font-bold tabular-nums">[{l.t}]</span> {l.m}
+                 </div>
+               ))}
+            </div>
+          </div>
+
+          <div className="bg-red-950/10 border-2 border-red-900/30 p-12 rounded-[60px] text-center shadow-inner relative group overflow-hidden">
+            <div className="absolute inset-0 bg-red-900/5 translate-y-full group-hover:translate-y-0 transition-transform duration-700" />
+            <p className="text-[11px] text-red-900 font-black uppercase tracking-[1.5em] mb-6 relative z-10">Sovereign_Mandate</p>
+            <p className="text-3xl font-black text-white italic uppercase tracking-tighter leading-none relative z-10">"{SLOGAN}"</p>
+          </div>
         </div>
       </main>
 
-      <footer className="bg-black border-t border-neutral-900 p-5 flex justify-between text-[10px] font-black text-neutral-700 uppercase tracking-widest relative z-50">
-        <div className="flex gap-10"><span>Uptime: {state.uptime}S</span><span>Ayutthaya_Nodes: Active</span></div>
-        <div className="flex gap-4"><span className="text-red-900 animate-pulse font-black italic">AGENT_AUTHENTICATED: SUPREME_GOVERNOR</span></div>
+      {/* FOOTER: SYSTEM TELEMETRY */}
+      <footer className="p-6 bg-neutral-950 border-t border-neutral-900 flex justify-between text-[10px] font-black uppercase text-neutral-800 tracking-[0.6em] z-[60]">
+        <div className="flex gap-16 items-center">
+          <span className="flex items-center gap-3"><div className="w-1.5 h-1.5 bg-green-700 rounded-full animate-pulse" /> NETWORK_STABILITY: OPTIMAL</span>
+          <span>UPTIME: {state.uptime}S</span>
+          <span>REGION: AYUTTHAYA_CORE</span>
+        </div>
+        <div className={`animate-pulse font-black italic tracking-[0.2em] ${isCooldown ? 'text-orange-700' : 'text-red-900'}`}>
+          Sovereign_Nexus_v4.1_Final_Lock
+        </div>
+        <div className="flex gap-8 items-center tabular-nums">
+           <span>{new Date().toLocaleDateString()}</span>
+           <span className="text-white opacity-50">{new Date().toLocaleTimeString()}</span>
+        </div>
       </footer>
 
       <style>{`
         @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
-        .animate-scan { position: absolute; animation: scan 15s linear infinite; }
+        .animate-scan { position: absolute; animation: scan 18s linear infinite; pointer-events: none; }
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #b91c1c; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1a1a1a; border-radius: 20px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #333; }
         .font-heading { font-family: 'Kanit', sans-serif; }
       `}</style>
     </div>
